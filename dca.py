@@ -54,7 +54,7 @@ class dca:
         print("********** ALL MATRIX FINISH *************")
         self.k_b_matrix = self.kernel_between_matrix(self.k_matrix, self.u_label_index)
         self.k_w_matrix = self.kernel_within_matrix(self.k_matrix, self.u_label_index) 
-        self.k_s_matrx = self.kernel_scatter_matrix(self.k_w_matrix, self.k_b_matrix)
+        self.k_s_matrix = self.kernel_scatter_matrix(self.k_w_matrix, self.k_b_matrix)
         print("********** ALL KERNEL MATRIX FINISH *************")
 
 
@@ -63,12 +63,12 @@ class dca:
         C_n = (np.identity(N) - (1/N)*np.dot(one_vec, one_vec.T))
 
         self.eigen_val, self.eigen_vec = self.dca_formula(self.s_matrix, self.b_matrix, self.ridge)
-        self.k_eigen_val, self.k_eigen_vec = self.kernel_dca_formula(self.k_matrix, self.k_s_matrx, self.k_b_matrix, self.ridge)
+        self.k_eigen_val, self.k_eigen_vec = self.kernel_dca_formula(self.k_matrix, self.k_w_matrix, self.k_b_matrix, self.ridge)
 
         self.dca_data_train = self.projection(self.eigen_vec, self.t_data)
 
         gg = np.dot(C_n.T, self.k_matrix)
-        self.k_dca_data_train = self.projection(self.k_eigen_vec, gg)
+        self.k_dca_data_train = self.projection(self.k_eigen_vec, gg, kernel=True)
 
         self.dca_data_val = self.projection(self.eigen_vec, self.v_data)
 
@@ -187,6 +187,7 @@ class dca:
         v_label_u = np.concatenate(v_label_u, axis=0)
         te_label_u = np.concatenate(te_label_u, axis=0)
 
+        print(t_label_u)
         t_label_p = np.concatenate(t_label_p, axis=0)
         v_label_p = np.concatenate(v_label_p, axis=0)
         te_label_p = np.concatenate(te_label_p, axis=0)
@@ -240,7 +241,7 @@ class dca:
 
             if kernel_index =='rbf':
                 K = rbf_kernel(data_matrix, gamma = gamma)          
-            if kernel_index =='polynimail':
+            if kernel_index =='polynomial':
                 K = polynomial_kernel(data_matrix, gamma = gamma)
             if kernel_index =='laplacian':
                 K = laplacian_kernel(data_matrix, gamma = gamma)
@@ -252,7 +253,7 @@ class dca:
 
             if kernel_index =='rbf':
                 K = rbf_kernel(data_matrix, y, gamma = gamma)
-            if kernel_index =='polynimail':
+            if kernel_index =='polynomial':
                 K = polynomial_kernel(data_matrix, y, gamma = gamma)
             if kernel_index =='laplacian':
                 K = laplacian_kernel(data_matrix, y, gamma = gamma)
@@ -399,21 +400,23 @@ class dca:
         k_bar = np.dot(k_bar, C_n)
 
         k_bar_square = k_scatter_matrix + k_between_matrix
-
+        #k_bar_square = np.dot(k_bar, k_bar)
+        #outside = k_bar_square + ridge * k_bar
         outside = inv(k_bar_square + ridge * k_bar)
         tar_matrix = np.dot(outside, k_between_matrix)
         w, v = eigh(tar_matrix)
-
+        #w, v = eigh(k_between_matrix, outside)
         return w, v 
 
     def projection(self, eigen_vector, data_matrix, kernel=False):
-
-        projection_matrix = eigen_vector[:self.com_dim]
+        index = [(i-1) for i in range(eigen_vector.shape[0], 0, -1)][:self.com_dim]
+        projection_matrix = eigen_vector[:, np.array(index)]
         #print(projection_matrix.shape)
         if kernel: 
-            output =  np.dot(projection_matrix, data_matrix)
+            output =  np.dot(projection_matrix.T, data_matrix)
         else :
-            output =  np.dot(projection_matrix, data_matrix.T)
+            #projection_matrix = eigen_vector[:, :]
+            output =  np.dot(projection_matrix.T, data_matrix.T)
         return output.T
 
     def fs_layer(self, input, output_dim, activation= tf.nn.relu, bias = False):
@@ -435,32 +438,36 @@ class dca:
         self.one_hot_u = tf.one_hot(self.label_u, 12)
         self.one_hot_p = tf.one_hot(self.label_p, 10)
 
-        self.dropout = tf.placeholder(tf.float32)
+        self.keep_prob = tf.placeholder(tf.float32)
         self.train_phase = tf.placeholder(tf.bool)
 
+
+        ## less parameters lead higher accuracy ....
         with tf.variable_scope('utility'):
 
-            out_u = self.fs_layer(self.data_u, 512, bias=True)
-            #out_u = tf.nn.dropout(out_u, keep_prob = self.dropout)
+            out_u = self.fs_layer(self.data_u, 1024, bias=True)
+            out_u = tf.nn.dropout(out_u, keep_prob = self.keep_prob)
+            out_u = self.fs_layer(out_u, 1024, bias=True)
+            out_u = tf.nn.dropout(out_u, keep_prob = self.keep_prob)
             out_u = self.fs_layer(out_u, 512, bias=True)
+            out_u = tf.nn.dropout(out_u, keep_prob = self.keep_prob)
+            self.out_u = self.fs_layer(out_u, 512, bias=True)
+            self.out_u = tf.nn.dropout(self.out_u, keep_prob = self.keep_prob)
             #out_u = tf.nn.dropout(out_u, keep_prob = self.dropout)
-            #out_u = self.fs_layer(out_u, 512, bias=True)
-            #out_u = tf.nn.dropout(out_u, keep_prob = self.dropout)
-            self.out_u = self.fs_layer(out_u, 128, bias=True)
-            out_u = tf.nn.dropout(out_u, keep_prob = self.dropout)
-            self.pre_logit_u = self.fs_layer(self.out_u, 12, activation=None, bias = True)
+            self.pre_logit_u = self.fs_layer(self.out_u, 12, activation = None, bias = True)
             self.prob_u = tf.nn.softmax(self.pre_logit_u)
 
 
         with tf.variable_scope('privacy'):
 
-            out_p = self.fs_layer(self.data_p, 512, bias=True)
-            #out_p = tf.nn.dropout(out_p, keep_prob = self.dropout)
+            out_p = self.fs_layer(self.data_p, 1024, bias=True)
+            out_p = tf.nn.dropout(out_p, keep_prob = self.keep_prob)
+            out_p = self.fs_layer(out_p, 1024, bias=True)
+            out_p = tf.nn.dropout(out_p, keep_prob = self.keep_prob)
             out_p = self.fs_layer(out_p, 512, bias=True)
-            #out_p = tf.nn.dropout(out_p, keep_prob = self.dropout)
-            #out_p = self.fs_layer(out_p, 512, bias=True)
-            #out_p = tf.nn.dropout(out_p, keep_prob = self.dropout)
-            self.out_p = self.fs_layer(out_p, 128, bias=True)
+            out_p = tf.nn.dropout(out_p, keep_prob = self.keep_prob)
+            self.out_p = self.fs_layer(out_p, 512, bias=True)
+            self.out_p = tf.nn.dropout(self.out_p, keep_prob = self.keep_prob)
             self.pre_logit_p = self.fs_layer(self.out_p, 10, activation=None, bias = True)
             self.prob_p = tf.nn.softmax(self.pre_logit_p)
 
@@ -474,12 +481,12 @@ class dca:
 
         uti_update_u = tf.get_collection(tf.GraphKeys.UPDATE_OPS, scope='utility')
         with tf.control_dependencies(uti_update_u):
-            op_u = tf.train.AdamOptimizer(0.0001)
+            op_u = tf.train.AdamOptimizer(0.001)
             self.opt_u = op_u.minimize(self.loss_u, var_list = self.theta_u)
 
         uti_update_p = tf.get_collection(tf.GraphKeys.UPDATE_OPS, scope='privacy')
         with tf.control_dependencies(uti_update_p):
-            op_p = tf.train.AdamOptimizer(0.0001)
+            op_p = tf.train.AdamOptimizer(0.001)
             self.opt_p = op_p.minimize(self.loss_p, var_list = self.theta_p)
 
 
@@ -517,7 +524,7 @@ class dca:
                 feed_dict[self.data_u] = i
                 feed_dict[self.label_u] = j
                 feed_dict[self.label_p] = k 
-                feed_dict[self.dropout] = 0.5 
+                feed_dict[self.keep_prob] = 0.5
                 loss, _, _ = self.sess.run([self.loss_u, self.opt_u, self.opt_p], feed_dict=feed_dict)
                 #print(loss)
 
@@ -576,7 +583,7 @@ class dca:
             feed_dict[self.data_u] = i
             feed_dict[self.label_u] = j
             feed_dict[self.label_p] = k     
-            feed_dict[self.dropout] = 1
+            feed_dict[self.keep_prob] = 1
             uu, pp = self.sess.run([self.prob_u, self.prob_p], feed_dict=feed_dict)
 
             temp_u.append(uu)
